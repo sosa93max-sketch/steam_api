@@ -31,6 +31,7 @@ using System.Windows.Forms;
 public class SteamEmulator
 {
     public static SteamEmulator Instance;
+    private static int shutdownStarted;
 
     #region Client Info
 
@@ -173,8 +174,27 @@ public class SteamEmulator
     /// </summary>
     public static void ShutdownServices()
     {
-        Lifetime.Shutdown();
-        APIClient.AbortPendingRequests();
+        if (Interlocked.Exchange(ref shutdownStarted, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            // This is the last network operation allowed during shutdown. It
+            // gives the server a chance to mark the account offline before the
+            // cancellation signal rejects all new work.
+            APIClient.GoOffline();
+            Lifetime.Shutdown();
+            APIClient.Shutdown();
+            EventPump.Shutdown();
+            WorkQueue.Shutdown();
+            NetworkManager.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            try { Write("Steam Emulator", $"API shutdown failed: {ex.Message}"); } catch { }
+        }
 
         try
         {
@@ -592,6 +612,5 @@ public class SteamEmulator
         MessageBox.Show("DEBUG");
     }
 }
-
 
 

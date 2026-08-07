@@ -11,6 +11,7 @@ namespace SKYNET.Managers
     public static class EventPump
     {
         private static int Started;
+        private static Thread PumpThread;
 
         public static void RunFrame(bool gameServer)
         {
@@ -37,6 +38,7 @@ namespace SKYNET.Managers
                 IsBackground = true,
                 Name = "SKYNET event pump"
             };
+            PumpThread = thread;
             thread.Start();
         }
 
@@ -72,6 +74,17 @@ namespace SKYNET.Managers
                     }
                 }
             }
+        }
+
+        public static void Shutdown()
+        {
+            var thread = PumpThread;
+            if (thread == null || thread == Thread.CurrentThread || !thread.IsAlive)
+            {
+                return;
+            }
+
+            Lifetime.JoinBriefly(thread);
         }
 
         private static void ApplyEvent(APIClient.ApiEvent serverEvent)

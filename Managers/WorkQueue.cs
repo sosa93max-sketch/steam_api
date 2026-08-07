@@ -27,6 +27,7 @@ namespace SKYNET.Managers
         private static readonly object CoalesceGate = new object();
         private static readonly SemaphoreSlim HighPrioritySignal = new SemaphoreSlim(0);
         private static readonly SemaphoreSlim NormalPrioritySignal = new SemaphoreSlim(0);
+        private static readonly ConcurrentBag<Thread> Workers = new ConcurrentBag<Thread>();
 
         private static int started;
         private static int queuedCount;
@@ -45,7 +46,19 @@ namespace SKYNET.Managers
                 return false;
             }
 
+            if (Lifetime.IsShuttingDown)
+            {
+                coalesced = false;
+                return false;
+            }
+
             EnsureStarted();
+
+            if (Lifetime.IsShuttingDown)
+            {
+                coalesced = false;
+                return false;
+            }
 
             if (!string.IsNullOrEmpty(coalesceKey))
             {
@@ -150,6 +163,7 @@ namespace SKYNET.Managers
                     IsBackground = true,
                     Name = "SKYNET WorkQueue High " + (i + 1)
                 };
+                Workers.Add(thread);
                 thread.Start();
             }
 
@@ -160,17 +174,18 @@ namespace SKYNET.Managers
                     IsBackground = true,
                     Name = "SKYNET WorkQueue " + (i + 1)
                 };
+                Workers.Add(thread);
                 thread.Start();
             }
         }
 
         private static void HighPriorityWorkerLoop()
         {
-            while (true)
+            while (!Lifetime.IsShuttingDown)
             {
                 HighPrioritySignal.Wait();
 
-                while (HighPriority.TryDequeue(out var item))
+                while (!Lifetime.IsShuttingDown && HighPriority.TryDequeue(out var item))
                 {
                     RunItem(item);
                 }
@@ -179,11 +194,11 @@ namespace SKYNET.Managers
 
         private static void WorkerLoop()
         {
-            while (true)
+            while (!Lifetime.IsShuttingDown)
             {
                 NormalPrioritySignal.Wait();
 
-                while (NormalPriority.TryDequeue(out var item))
+                while (!Lifetime.IsShuttingDown && NormalPriority.TryDequeue(out var item))
                 {
                     RunItem(item);
                 }
@@ -218,12 +233,46 @@ namespace SKYNET.Managers
                         }
                     }
 
-                    if (pending != null)
+                    if (pending != null && !Lifetime.IsShuttingDown)
                     {
                         Interlocked.Increment(ref queuedCount);
                         QueueItem(CreateWorkItem(pending.Name, pending.Work, item.CoalesceKey), pending.HighPriority);
                     }
+                    else if (pending != null)
+                    {
+                        CoalescedKeys.TryRemove(item.CoalesceKey, out _);
+                    }
                 }
+            }
+        }
+
+        public static void Shutdown()
+        {
+            for (var i = 0; i < HighPriorityWorkerCount; i++)
+            {
+                try { HighPrioritySignal.Release(); } catch { }
+            }
+
+            for (var i = 0; i < NormalWorkerCount; i++)
+            {
+                try { NormalPrioritySignal.Release(); } catch { }
+            }
+
+            var deadline = DateTime.UtcNow.AddMilliseconds(300);
+            foreach (var worker in Workers)
+            {
+                if (worker == null || worker == Thread.CurrentThread || !worker.IsAlive)
+                {
+                    continue;
+                }
+
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                try { worker.Join(remaining); } catch { }
             }
         }
 

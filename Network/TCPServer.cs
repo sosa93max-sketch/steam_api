@@ -94,8 +94,15 @@ namespace SKYNET.Network
 
         public void Stop()
         {
-            _serverSocket.Close();
-            _serverSocket.Dispose();
+            var socket = _serverSocket;
+            _serverSocket = null;
+            if (socket == null)
+            {
+                return;
+            }
+
+            try { socket.Close(); } catch { }
+            try { socket.Dispose(); } catch { }
         }
 
         internal void DisconnectAll()

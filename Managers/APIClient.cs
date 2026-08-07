@@ -63,6 +63,26 @@ namespace SKYNET.Managers
             // as BLoggedOn/GetSteamID or dedicated server registration/logon.
         }
 
+        /// <summary>
+        /// Releases the signals and requests owned by the API workers. The
+        /// lifetime cancellation is performed by SteamEmulator so the order is
+        /// explicit: announce offline, cancel loops, abort sockets, then join
+        /// the workers that can be joined.
+        /// </summary>
+        public static void Shutdown()
+        {
+            AbortPendingRequests();
+            PresenceSignal.Set();
+            P2PQueueSignal.Set();
+            PendingPresence.Clear();
+            Interlocked.Exchange(ref PendingGameServerPresence, null);
+            while (P2PQueue.TryDequeue(out _))
+            {
+                Interlocked.Decrement(ref P2PQueueCount);
+            }
+            Interlocked.Exchange(ref P2PQueueCount, 0);
+        }
+
         // Non-blocking on the caller (game) thread: returns whether a session
         // token already exists, and otherwise kicks off the handshake in the
         // background. The blocking network round-trip never runs on the game
@@ -143,7 +163,9 @@ namespace SKYNET.Managers
 
         private static void QueueSessionHandshake()
         {
-            if (!IsEnabled || !string.IsNullOrWhiteSpace(SteamEmulator.AccessToken))
+            if (Lifetime.IsShuttingDown ||
+                !IsEnabled ||
+                !string.IsNullOrWhiteSpace(SteamEmulator.AccessToken))
             {
                 return;
             }
@@ -185,6 +207,11 @@ namespace SKYNET.Managers
         // network/discovery work off the game thread.
         private static bool StartBackgroundWorker(string name, Action action)
         {
+            if (Lifetime.IsShuttingDown)
+            {
+                return false;
+            }
+
             try
             {
                 var thread = new Thread(() =>
@@ -1691,6 +1718,11 @@ namespace SKYNET.Managers
 
         private static void StartPresenceDispatcher()
         {
+            if (Lifetime.IsShuttingDown)
+            {
+                return;
+            }
+
             if (Interlocked.Exchange(ref PresenceDispatcherStarted, 1) == 1)
             {
                 return;
@@ -2289,6 +2321,8 @@ namespace SKYNET.Managers
             request.Timeout = EffectiveTimeoutMs(timeoutMs);
             request.ReadWriteTimeout = request.Timeout;
 
+            InFlightRequests[request] = true;
+
             if (applyAuth && !string.IsNullOrWhiteSpace(SteamEmulator.AccessToken))
             {
                 request.Headers[HttpRequestHeader.Authorization] = "Bearer " + SteamEmulator.AccessToken;
@@ -2305,7 +2339,6 @@ namespace SKYNET.Managers
                 }
             }
 
-            InFlightRequests[request] = true;
             try
             {
                 using (var response = (HttpWebResponse)request.GetResponse())
@@ -2379,6 +2412,11 @@ namespace SKYNET.Managers
 
         private static void StartP2PDispatcher()
         {
+            if (Lifetime.IsShuttingDown)
+            {
+                return;
+            }
+
             if (Interlocked.Exchange(ref P2PDispatcherStarted, 1) == 1)
             {
                 return;

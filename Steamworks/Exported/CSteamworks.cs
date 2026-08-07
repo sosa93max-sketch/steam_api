@@ -61,7 +61,6 @@ namespace SKYNET.Steamworks.Exported
         public static void Shutdown()
         {
             Write("Shutdown");
-            APIClient.GoOffline();
             SteamEmulator.ShutdownServices();
         }
 

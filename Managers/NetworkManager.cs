@@ -41,6 +41,19 @@ namespace SKYNET.Managers
             ThreadPool.QueueUserWorkItem(BroadcastAnnounce);
         }
 
+        public static void Shutdown()
+        {
+            var server = TCPServer;
+            TCPServer = null;
+            if (server == null)
+            {
+                return;
+            }
+
+            try { server.DisconnectAll(); } catch { }
+            try { server.Stop(); } catch { }
+        }
+
         private static void TCPServer_OnConnected(object sender, ClientSocket e)
         {
             Write("Client connected from " + e.RemoteEndPoint);

@@ -30,33 +30,12 @@ namespace SKYNET.Managers
 
         public static void Initialize()
         {
-            CleanupLegacyInGameWorkshopFolder();
             EnsureIdentity((ulong)SteamEmulator.SteamID, SteamEmulator.AppID);
-        }
-
-        /// <summary>
-        /// Removes the workshop cache an older build kept inside the game folder
-        /// (D2MAX\Workshop next to dota2.exe). Dota scans its own tree at startup
-        /// and refuses to run when that folder exists; the cache now lives under
-        /// %LOCALAPPDATA%\D2Max\Workshop instead, so the game folder only keeps
-        /// the ini and logs. The subscriptions are re-fetched from the server on
-        /// logon, so the local snapshot is only an offline cache.
-        /// </summary>
-        private static void CleanupLegacyInGameWorkshopFolder()
-        {
-            try
-            {
-                var legacy = Common.DataPath("Workshop");
-                if (Directory.Exists(legacy))
-                {
-                    Directory.Delete(legacy, true);
-                    SteamEmulator.Write("Workshop", $"Removed legacy in-game workshop cache {legacy}");
-                }
-            }
-            catch (Exception ex)
-            {
-                SteamEmulator.Write("Workshop", $"Unable to remove legacy workshop cache: {ex.Message}");
-            }
+            // A previous build may have left an empty marker directory behind.
+            // Removing only empty directories is safe and prevents Dota from
+            // seeing a stale Workshop folder on the next process start.
+            PruneEmptyLegacyDirectories(Common.DataPath("Workshop"));
+            PruneEmptyLegacyDirectories(Path.Combine(Common.GetPath(), "SKYNET", "Workshop"));
         }
 
         public static void ApplyServerSnapshot(
@@ -299,8 +278,9 @@ namespace SKYNET.Managers
 
         private static void LoadSnapshotLocked()
         {
-            var path = GetSnapshotPath(CurrentSteamId, CurrentAppId);
-            if (!File.Exists(path))
+            var path = GetSnapshotPaths(CurrentSteamId, CurrentAppId)
+                .FirstOrDefault(File.Exists);
+            if (string.IsNullOrEmpty(path))
             {
                 return;
             }
@@ -324,10 +304,86 @@ namespace SKYNET.Managers
                         Subscriptions[subscription.PublishedFileId] = CloneSubscription(subscription);
                     }
                 }
+
+                var currentPath = GetSnapshotPath(CurrentSteamId, CurrentAppId);
+                if (!string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    MigrateLegacySnapshot(path, snapshot);
+                }
             }
             catch (Exception ex)
             {
                 SteamEmulator.Write("Workshop", $"Unable to load subscription snapshot: {ex.Message}");
+            }
+        }
+
+        private static void MigrateLegacySnapshot(string sourcePath, WorkshopSnapshot snapshot)
+        {
+            var targetPath = GetSnapshotPath(CurrentSteamId, CurrentAppId);
+            try
+            {
+                SaveSnapshot(targetPath, snapshot);
+                if (!File.Exists(targetPath))
+                {
+                    return;
+                }
+
+                File.Delete(sourcePath);
+                PruneEmptyLegacyDirectories(Path.GetDirectoryName(sourcePath));
+                SteamEmulator.Write("Workshop", "Migrated the subscription snapshot out of the game directory.");
+            }
+            catch (Exception ex)
+            {
+                // Preserve the legacy file if another process has it open. All
+                // future writes still use the external cache path.
+                SteamEmulator.Write("Workshop", $"Unable to migrate subscription snapshot: {ex.Message}");
+            }
+        }
+
+        private static void PruneEmptyLegacyDirectories(string directoryPath)
+        {
+            var directory = string.IsNullOrWhiteSpace(directoryPath)
+                ? null
+                : new DirectoryInfo(directoryPath);
+
+            var workshopDirectory = directory;
+            while (workshopDirectory != null &&
+                   !string.Equals(workshopDirectory.Name, "Workshop", StringComparison.OrdinalIgnoreCase))
+            {
+                workshopDirectory = workshopDirectory.Parent;
+            }
+
+            if (workshopDirectory == null)
+            {
+                return;
+            }
+
+            while (directory != null)
+            {
+                try
+                {
+                    if (directory.GetFiles().Length != 0 || directory.GetDirectories().Length != 0)
+                    {
+                        return;
+                    }
+
+                    var isWorkshopDirectory = string.Equals(
+                        directory.Name,
+                        "Workshop",
+                        StringComparison.OrdinalIgnoreCase);
+                    var parent = directory.Parent;
+                    directory.Delete();
+                    if (isWorkshopDirectory)
+                    {
+                        return;
+                    }
+
+                    directory = parent;
+                }
+                catch
+                {
+                    return;
+                }
             }
         }
 
@@ -478,6 +534,32 @@ namespace SKYNET.Managers
                 appId.ToString(),
                 steamId.ToString(),
                 "subscriptions.json");
+        }
+
+        private static IEnumerable<string> GetSnapshotPaths(ulong steamId, uint appId)
+        {
+            yield return GetSnapshotPath(steamId, appId);
+
+            // Read the old in-game cache only for migration. Never write to it:
+            // Dota scans its own directory tree and a generated Workshop folder
+            // can make the next process start hidden or fail altogether.
+            yield return Common.DataPath(
+                "Workshop",
+                appId.ToString(),
+                steamId.ToString(),
+                "subscriptions.json");
+
+            var legacyRoot = Path.Combine(Common.GetPath(), "SKYNET");
+            var currentRoot = Common.DataPath();
+            if (!string.Equals(legacyRoot, currentRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return Path.Combine(
+                    legacyRoot,
+                    "Workshop",
+                    appId.ToString(),
+                    steamId.ToString(),
+                    "subscriptions.json");
+            }
         }
 
         /// <summary>
