@@ -1,0 +1,597 @@
+﻿/*
+
+                                ░██████╗██╗░░██╗██╗░░░██╗███╗░░██╗███████╗████████╗
+                                ██╔════╝██║░██╔╝╚██╗░██╔╝████╗░██║██╔════╝╚══██╔══╝
+                                ╚█████╗░█████═╝░░╚████╔╝░██╔██╗██║█████╗░░░░░██║░░░
+                                ░╚═══██╗██╔═██╗░░░╚██╔╝░░██║╚████║██╔══╝░░░░░██║░░░
+                                ██████╔╝██║░╚██╗░░░██║░░░██║░╚███║███████╗░░░██║░░░
+                                ╚═════╝░╚═╝░░╚═╝░░░╚═╝░░░╚═╝░░╚══╝╚══════╝░░░╚═╝░░░   
+*/
+
+// #define FORCELOG   // debug-only: forces sync file+console log on EVERY Write (disk I/O per call). Leave off in prod.
+using SKYNET;
+using SKYNET.Helper;
+using SKYNET.Helpers;
+using SKYNET.Managers;
+using SKYNET.Steamworks;
+using SKYNET.Steamworks.Implementation;
+using SKYNET.Steamworks.Interfaces;
+using SKYNET.Steamworks.Types;
+using SKYNET.Types;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+using AppID = System.UInt32;
+using HSteamPipe = System.UInt32;
+using HSteamUser = System.UInt32;
+using System.Windows.Forms;
+
+public class SteamEmulator
+{
+    public static SteamEmulator Instance;
+
+    #region Client Info
+
+    public static string Language;
+    public static string PersonaName;
+    public static string EmulatorPath;
+
+    public static CSteamID SteamID;
+    public static CSteamID SteamID_GS;
+    public static uint AppID;
+    public static int AppBuildIdOverride;
+    public static List<DLC> DLCs;
+    public static bool UnlockAllDLC;
+
+    public static HSteamUser HSteamUser;
+    public static HSteamPipe HSteamPipe;
+
+    public static HSteamUser HSteamUser_GS;
+    public static HSteamPipe HSteamPipe_GS;
+
+    public static bool GameOverlay;
+    public static bool SendLog;
+    public static bool ConsoleLog;
+    public static bool LogToFile;
+    public static bool LogToConsole;
+
+    public static bool Initialized;
+    public static bool Initializing;
+
+    // Debug options
+    public static bool RunCallbacks;
+    public static bool ISteamHTTP;
+    public static bool UseServerApi;
+    // Enables SKYNET-issued SDR certificates and the native CA patch. Keep this
+    // disabled for unauthenticated LAN transport unless secure SDR is required.
+    public static bool SecureNetworking;
+    public static string ServerUrl;
+    public static string AccessToken;
+    public static string RefreshToken;
+    public static string ClientInstanceId;
+    public static bool UseActiveWebUser;
+    public static bool EnableVoiceCapture;
+    public static int PollIntervalMs;
+    public static int HttpTimeoutMs;
+    public static int DiscoveryPort;
+    public static string WorkshopContentRoot;
+    public static bool MusicEnabled;
+    public static string MusicLibraryRoot;
+
+    public static int BroadCastPort = 28032;
+
+    #endregion
+
+    #region Interfaces 
+
+    //Client
+    public static SteamClient SteamClient;
+    public static SKYNET.Steamworks.Implementation.SteamUser SteamUser;
+    public static SteamFriends SteamFriends;
+    public static SteamUtils SteamUtils;
+    public static SteamMatchmaking SteamMatchmaking;
+    public static SteamMatchMakingServers SteamMatchMakingServers;
+    public static SteamUserStats SteamUserStats;
+    public static SteamApps SteamApps;
+    public static SteamNetworking SteamNetworking;
+    public static SteamRemoteStorage SteamRemoteStorage;
+    public static SteamScreenshots SteamScreenshots;
+    public static SteamHTTP SteamHTTP;
+    public static SteamController SteamController;
+    public static SteamUGC SteamUGC;
+    public static SteamAppList SteamAppList;
+    public static SteamMusic SteamMusic;
+    public static SteamMusicRemote SteamMusicRemote;
+    public static SteamHTMLSurface SteamHTMLSurface;
+    public static SteamInventory SteamInventory;
+    public static SteamVideo SteamVideo;
+    public static SteamParentalSettings SteamParentalSettings;
+    public static SteamNetworkingSockets SteamNetworkingSockets;
+    public static SteamNetworkingSocketsSerialized SteamNetworkingSocketsSerialized;
+    public static SteamNetworkingMessages SteamNetworkingMessages;
+    public static SteamGameCoordinator SteamGameCoordinator;
+    public static SteamNetworkingUtils SteamNetworkingUtils;
+    public static SteamGameSearch SteamGameSearch;
+    public static SteamInput SteamInput;
+    public static SteamParties SteamParties;
+    public static SteamRemotePlay SteamRemotePlay;
+    public static SteamTimeline SteamTimeline;
+    public static SteamTV SteamTV;
+
+    //GameServer
+    public static SteamGameServer SteamGameServer;
+    public static SteamGameServerStats SteamGameServerStats;
+    public static SteamMasterServerUpdater SteamMasterServerUpdater;
+
+    #endregion
+
+    public SteamEmulator()
+    {
+        Instance = this;
+    }
+
+    static SteamEmulator()
+    {
+        // Load Default data
+        Language = "english";
+        PersonaName = "";
+        EmulatorPath = "";
+        SteamID = CSteamID.Invalid;
+        SteamID_GS = CSteamID.CreateOne(true); 
+        AppID = 0;
+        AppBuildIdOverride = 0;
+        DLCs = new List<DLC>();
+        UnlockAllDLC = true;
+        LogToFile = true;
+        LogToConsole = true;
+        ISteamHTTP = true;
+        UseServerApi = true;
+        SecureNetworking = false;
+        ServerUrl = "http://127.0.0.1:27080/";
+        AccessToken = string.Empty;
+        RefreshToken = string.Empty;
+        ClientInstanceId = string.Empty;
+        UseActiveWebUser = true;
+        EnableVoiceCapture = true;
+        PollIntervalMs = 50;
+        HttpTimeoutMs = 8000;
+        DiscoveryPort = 27081;
+        WorkshopContentRoot = string.Empty;
+        MusicEnabled = true;
+        MusicLibraryRoot = string.Empty;
+    }
+
+    /// <summary>
+    /// Stops every background service the emulator started. The order matters:
+    /// the shutdown signal and the abort of in-flight HTTP calls come first, so
+    /// the long-poll workers are already unblocked when the game joins them.
+    /// The whole path is budgeted at well under a second; a worker that is
+    /// still busy is abandoned (all of them are background threads and cannot
+    /// keep the process alive on their own).
+    /// </summary>
+    public static void ShutdownServices()
+    {
+        Lifetime.Shutdown();
+        APIClient.AbortPendingRequests();
+
+        try
+        {
+            MusicPlayerManager.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            Write("Steam Emulator", $"Music shutdown failed: {ex.Message}");
+        }
+
+        try
+        {
+            SteamHTMLSurface?.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            Write("Steam Emulator", $"HTML surface shutdown failed: {ex.Message}");
+        }
+
+        Log.Shutdown();
+    }
+
+    public static void Initialize()
+    {
+        try
+        {
+            if (Initialized) return;
+            Initializing = true;
+
+            SteamID = CSteamID.Invalid;
+            LoadAppID();
+
+            Settings.Load();
+
+            Log.Initialize();
+            RegisterProcessExitHook();
+            Write(
+                "Config",
+                $"Server API enabled={UseServerApi} url={ServerUrl} timeoutMs={HttpTimeoutMs} discoveryPort={DiscoveryPort} activeWeb={UseActiveWebUser}");
+
+            // Pre-warm the CLR thread pool. Our sync-over-async HTTP calls
+            // (SendAsync().GetAwaiter().GetResult()) need a pool thread to run the
+            // continuation. In hosted/injected CLRs inside other runtimes (e.g. Unity
+            // games), the pool starts starved and grows slowly, which delayed the
+            // server session handshake by many seconds and left GetSteamID returning
+            // Invalid — so games never got their avatar. Only affects the emulator's
+            // own .NET pool, not the host's.
+            try
+            {
+                System.Threading.ThreadPool.GetMinThreads(out int curWorker, out int curIo);
+                System.Threading.ThreadPool.SetMinThreads(Math.Max(curWorker, 16), Math.Max(curIo, 16));
+            }
+            catch { /* best effort */ }
+
+            Write("Initializing Steam emulator");
+            Write($"Process PID={Process.GetCurrentProcess().Id} Role={Environment.GetEnvironmentVariable("SKYNET_PROCESS_ROLE") ?? "client"} CommandLine={Environment.CommandLine}");
+            Write($"Networking security mode: {(SecureNetworking ? "secure SDR certificate" : "insecure LAN (no SDR certificate)")}");
+
+            if (SecureNetworking)
+            {
+                // In-memory SDR CA patch. Start() only announces it — NO module or
+                // thread work on the init thread (that deadlocks Dota's startup at
+                // ~30MB on the loader lock). The actual patch runs later from a game
+                // thread on the first SDR cert request (GetCertAsync).
+                SdrCertPatcher.Start();
+            }
+
+            //UserManager.Initialize();
+            //NetworkManager.Initialize();
+            Write("Initializing InterfaceManager");
+            InterfaceManager.Initialize();
+            Write("InterfaceManager initialized");
+
+            Write("Initializing APIClient");
+            APIClient.Initialize();
+            Write("APIClient initialized");
+
+            // Memory patching is disabled. Disk patching is checked before the
+            // networking interfaces ask for SDR config or a certificate.
+
+            #region Interface Initialization
+
+            // Client Interfaces
+
+            Write("Creating client interfaces");
+            SteamClient = CreateInterface("SteamClient", () => new SteamClient());
+
+            SteamUser = CreateInterface("SteamUser", () => new SKYNET.Steamworks.Implementation.SteamUser());
+
+            SteamFriends = CreateInterface("SteamFriends", () => new SteamFriends());
+
+            SteamUtils = CreateInterface("SteamUtils", () => new SteamUtils());
+
+            SteamMatchmaking = CreateInterface("SteamMatchmaking", () => new SteamMatchmaking());
+
+            SteamMatchMakingServers = CreateInterface("SteamMatchMakingServers", () => new SteamMatchMakingServers());
+
+            SteamUserStats = CreateInterface("SteamUserStats", () => new SteamUserStats());
+
+            SteamApps = CreateInterface("SteamApps", () => new SteamApps());
+
+            SteamNetworking = CreateInterface("SteamNetworking", () => new SteamNetworking());
+
+            SteamRemoteStorage = CreateInterface("SteamRemoteStorage", () => new SteamRemoteStorage());
+
+            SteamScreenshots = CreateInterface("SteamScreenshots", () => new SteamScreenshots());
+
+            SteamHTTP = CreateInterface("SteamHTTP", () => new SteamHTTP());
+
+            SteamController = CreateInterface("SteamController", () => new SteamController());
+
+            SteamUGC = CreateInterface("SteamUGC", () => new SteamUGC());
+
+            SteamAppList = CreateInterface("SteamAppList", () => new SteamAppList());
+
+            SteamMusic = CreateInterface("SteamMusic", () => new SteamMusic());
+
+            SteamMusicRemote = CreateInterface("SteamMusicRemote", () => new SteamMusicRemote());
+
+            SteamHTMLSurface = CreateInterface("SteamHTMLSurface", () => new SteamHTMLSurface());
+
+            SteamInventory = CreateInterface("SteamInventory", () => new SteamInventory());
+
+            SteamVideo = CreateInterface("SteamVideo", () => new SteamVideo());
+
+            SteamParentalSettings = CreateInterface("SteamParentalSettings", () => new SteamParentalSettings());
+
+            SteamNetworkingSockets = CreateInterface("SteamNetworkingSockets", () => new SteamNetworkingSockets());
+
+            SteamNetworkingSocketsSerialized = CreateInterface("SteamNetworkingSocketsSerialized", () => new SteamNetworkingSocketsSerialized());
+
+            SteamNetworkingMessages = CreateInterface("SteamNetworkingMessages", () => new SteamNetworkingMessages());
+
+            SteamGameCoordinator = CreateInterface("SteamGameCoordinator", () => new SteamGameCoordinator());
+
+            SteamNetworkingUtils = CreateInterface("SteamNetworkingUtils", () => new SteamNetworkingUtils());
+
+            SteamGameSearch = CreateInterface("SteamGameSearch", () => new SteamGameSearch());
+
+            SteamParties = CreateInterface("SteamParties", () => new SteamParties());
+
+            SteamRemotePlay = CreateInterface("SteamRemotePlay", () => new SteamRemotePlay());
+
+            SteamTimeline = CreateInterface("SteamTimeline", () => new SteamTimeline());
+
+            SteamTV = CreateInterface("SteamTV", () => new SteamTV());
+
+            SteamInput = CreateInterface("SteamInput", () => new SteamInput());
+
+            // Server Interfaces
+
+            Write("Creating server interfaces");
+            SteamGameServer = CreateInterface("SteamGameServer", () => new SteamGameServer());
+
+            SteamGameServerStats = CreateInterface("SteamGameServerStats", () => new SteamGameServerStats());
+
+            SteamMasterServerUpdater = CreateInterface("SteamMasterServerUpdater", () => new SteamMasterServerUpdater());
+
+            #endregion
+            
+            HSteamUser = 1;
+            HSteamPipe = 1;
+
+            HSteamUser_GS = 2;
+            HSteamPipe_GS = 2;
+
+            Initialized = true;
+            Write("Steam emulator initialized");
+        }
+        catch (Exception ex)
+        {
+            Write(ex);
+        }
+        finally
+        {
+            // A failed Initialize used to leave Initializing = true forever,
+            // so a half-initialized emulator was never retried and looked healthy.
+            Initializing = false;
+        }
+    }
+
+    /// <summary>
+    /// Games that exit without calling SteamAPI_Shutdown still have to release
+    /// the emulator's workers, otherwise a long-poll blocked in a socket read
+    /// is torn down mid-flight while the process is exiting.
+    /// </summary>
+    private static void RegisterProcessExitHook()
+    {
+        if (Interlocked.Exchange(ref processExitHookRegistered, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            AppDomain.CurrentDomain.ProcessExit += (_, __) => ShutdownServices();
+            AppDomain.CurrentDomain.DomainUnload += (_, __) => ShutdownServices();
+        }
+        catch
+        {
+        }
+    }
+
+    private static int processExitHookRegistered;
+
+    private static void LoadAppID()
+    {
+        try
+        {
+            string appid_Path = Path.Combine(Common.GetPath(), "steam_appid.txt");
+            if (File.Exists(appid_Path))
+            {
+                string content = File.ReadAllText(appid_Path).Trim();
+                if (uint.TryParse(content, out var appId) && appId != 0)
+                {
+                    AppID = appId;
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// Applies an AppID supplied by a Steam bootstrap API. AppID zero is
+    /// k_uAppIdInvalid, which tells Steam to use steam_appid.txt or the launch
+    /// context; it must never erase an AppID already resolved from those sources.
+    /// </summary>
+    public static void ApplyAppIdHint(uint appId, string source)
+    {
+        if (appId == 0)
+        {
+            Write($"{source} supplied k_uAppIdInvalid; preserving AppID {AppID}");
+            return;
+        }
+
+        if (AppID == appId)
+        {
+            return;
+        }
+
+        var previousAppId = AppID;
+        AppID = appId;
+        Write($"{source} resolved AppID {appId} (previous {previousAppId})");
+    }
+
+    private static T CreateInterface<T>(string name, Func<T> factory)
+    {
+        Write($"Creating {name}");
+        try
+        {
+            var instance = factory();
+            Write($"{name} created");
+            return instance;
+        }
+        catch (Exception ex)
+        {
+            Write($"{name} creation failed: {ex}");
+            throw;
+        }
+    }
+
+    private static void IsGCMessageAvailable(object sender, Dictionary<uint, byte[]> gcMessages)
+    {
+        foreach (var msg in gcMessages)
+        {
+            SteamGameCoordinator.PushMessage(msg.Key, msg.Value);
+        }
+    }
+
+    public static HSteamUser CreateSteamUser()
+    {
+        if (HSteamUser == 0)
+        {
+            HSteamUser = 1;
+            Write($"Creating user {HSteamUser}");
+        }
+        return HSteamUser;
+    }
+
+    public static uint CreateSteamPipe()
+    {
+        if (HSteamPipe == 0)
+        {
+            HSteamPipe = 1;
+            Write($"Creating pipe {HSteamPipe}");
+        }
+        return HSteamPipe;
+    }
+
+    private static void Write(object msg)
+    {
+        Write("Steam Emulator", msg);
+    }
+
+#if FORCELOG
+
+    public static void Write(string sender, object msg)
+    {
+        if (ShouldSuppressHotLog(sender, msg))
+        {
+            return;
+        }
+
+        string message = " ";
+        message += string.IsNullOrEmpty(sender) ? "" : $"{sender}: ";
+        message += msg == null ? "NULL" : msg;
+
+            if (true)
+            {
+                Log.AppEnd(message);
+                //lastMsg = msg.ToString();
+            }
+
+            if (true)
+            {
+                if (sender.ToUpper() == "DEBUG")
+                    Console.ForegroundColor = ConsoleColor.Red;
+                else
+                    Console.ResetColor();
+                Console.WriteLine(message);
+            }
+
+    }
+
+#else
+
+    public static void Write(string sender, object msg)
+    {
+        // Cheapest gate first: if nothing is being logged, do no work at all —
+        // no lock, no string build, no I/O. This is the hot production path.
+        if (!LogToFile && !LogToConsole)
+        {
+            return;
+        }
+
+        if (ShouldSuppressHotLog(sender, msg))
+        {
+            return;
+        }
+
+        MutexHelper.Wait("LOG", delegate
+        {
+            string message = " ";
+            message += string.IsNullOrEmpty(sender) ? "" : $"{sender}: ";
+            message += msg == null ? "NULL" : msg;
+
+            if (LogToFile)
+            {
+                Log.AppEnd(message);
+            }
+
+            if (LogToConsole)
+            {
+                ConsoleHelper.WriteLine(message);
+            }
+        });
+    }
+
+#endif
+
+    private static bool ShouldSuppressHotLog(string sender, object msg)
+    {
+        if (msg == null)
+        {
+            return false;
+        }
+
+        string text = msg.ToString();
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        switch (text)
+        {
+            case "SteamAPI_RunCallbacks":
+            case "SteamGameServer_RunCallbacks":
+            case "RunFrame":
+            case "GetServerRealTime":
+            case "IsMessageAvailable = False":
+                return true;
+        }
+
+        if (sender == "CallbackManager")
+        {
+            if (text.StartsWith("Added Callback 304 ", StringComparison.Ordinal) ||
+                text.StartsWith("Registered callback 304 ", StringComparison.Ordinal) ||
+                text.StartsWith("Added Callback 3406 ", StringComparison.Ordinal) ||
+                text.StartsWith("Registered callback 3406 ", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        if (sender == "SteamAPI")
+        {
+            if ((text.Contains("  3406 ") && text.Contains("DownloadItemResult")) ||
+                text == "SteamAPI_UnregisterCallback DownloadItemResult OK" ||
+                text == "SteamAPI_UnregisterCallback PersonaStateChange OK")
+            {
+                return true;
+            }
+        }
+
+        return text.Contains("GetPersonaState  = k_EPersonaStateOnline");
+    }
+
+    public static void Debug(object msg, ConsoleColor color = ConsoleColor.Red)
+    {
+        Console.ForegroundColor = color;
+        Console.WriteLine($" DEBUG: {msg}");
+
+        MessageBox.Show("DEBUG");
+    }
+}
+
+
+

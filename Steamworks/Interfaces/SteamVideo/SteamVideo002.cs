@@ -1,0 +1,35 @@
+using System;
+using System.Runtime.InteropServices;
+
+namespace SKYNET.Steamworks.Interfaces
+{
+    [Interface("STEAMVIDEO_INTERFACE_V002")]
+    [Interface("STEAMVIDEO_INTERFACE_V003")]
+    [Interface("STEAMVIDEO_INTERFACE_V004")]
+    [Interface("STEAMVIDEO_INTERFACE_V005")]
+    [Interface("STEAMVIDEO_INTERFACE_V006")]
+    [Interface("STEAMVIDEO_INTERFACE_V007")]
+    public class SteamVideo002 : ISteamInterface
+    {
+        public void GetVideoURL(IntPtr _, uint unVideoAppID)
+        {
+            SteamEmulator.SteamVideo.GetVideoURL(unVideoAppID);
+        }
+
+        public bool IsBroadcasting(IntPtr _, IntPtr pnNumViewers)
+        {
+            return SteamEmulator.SteamVideo.IsBroadcasting(pnNumViewers);
+        }
+
+        public void GetOPFSettings(IntPtr _, uint unVideoAppID)
+        {
+            SteamEmulator.SteamVideo.GetOPFSettings(unVideoAppID);
+        }
+
+        public bool GetOPFStringForApp(IntPtr _, uint unVideoAppID, IntPtr pchBuffer, IntPtr pnBufferSize)
+        {
+            return SteamEmulator.SteamVideo.GetOPFStringForApp(unVideoAppID, pchBuffer, pnBufferSize);
+        }
+
+    }
+}

@@ -1,0 +1,7 @@
+D:\Install\Proyectos\Windows\D2STServer\steam_api\bin\Release\steam_api.dll.config
+D:\Install\Proyectos\Windows\D2STServer\steam_api\bin\Release\steam_api.dll
+D:\Install\Proyectos\Windows\D2STServer\steam_api\bin\Release\steam_api.pdb
+D:\Install\Proyectos\Windows\D2STServer\steam_api\obj\Release\steam_api.csproj.AssemblyReference.cache
+D:\Install\Proyectos\Windows\D2STServer\steam_api\obj\Release\steam_api.csproj.CoreCompileInputs.cache
+D:\Install\Proyectos\Windows\D2STServer\steam_api\obj\Release\steam_api.dll
+D:\Install\Proyectos\Windows\D2STServer\steam_api\obj\Release\steam_api.pdb

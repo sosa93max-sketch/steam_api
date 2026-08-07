@@ -1,0 +1,1111 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
+using SKYNET.Callback;
+using SKYNET.Helpers;
+using SKYNET.Managers;
+using SKYNET.Steamworks.Interfaces;
+
+using SteamAPICall_t = System.UInt64;
+using PublishedFileId_t = System.UInt64;
+using UGCQueryHandle_t = System.UInt64;
+using UGCUpdateHandle_t = System.UInt64;
+
+namespace SKYNET.Steamworks.Implementation
+{
+    public class SteamUGC : ISteamInterface
+    {
+        public static SteamUGC Instance;
+
+        private List<UGC> UGCQueries;
+        private UGCQueryHandle_t Handle;
+
+        public SteamUGC()
+        {
+            Instance = this;
+            InterfaceName = "SteamUGC";
+            InterfaceVersion = "STEAMUGC_INTERFACE_VERSION021";
+            UGCQueries = new List<UGC>();
+            WorkshopManager.Initialize();
+        }
+
+        public UGCQueryHandle_t CreateQueryUserUGCRequest(uint unAccountID, int eListType, int eMatchingUGCType, int eSortOrder, uint nCreatorAppID, uint nConsumerAppID, uint unPage)
+        {
+            Write($"CreateQueryUserUGCRequest (AccountID = {unAccountID})");
+            return CreateOne((eListType == (int)EUserUGCList.k_EUserUGCList_Subscribed || eListType == (int)EUserUGCList.k_EUserUGCList_Published));
+        }
+
+        public UGCQueryHandle_t CreateQueryAllUGCRequest(int eQueryType, int eMatchingeMatchingUGCTypeFileType, uint nCreatorAppID, uint nConsumerAppID, uint unPage)
+        {
+            Write("CreateQueryAllUGCRequest");
+            return CreateOne();
+        }
+
+        public UGCQueryHandle_t CreateQueryAllUGCRequest(int eQueryType, int eMatchingeMatchingUGCTypeFileType, uint nCreatorAppID, uint nConsumerAppID, string pchCursor)
+        {
+            Write("CreateQueryAllUGCRequest");
+            return CreateOne();
+        }
+
+        public UGCQueryHandle_t CreateQueryUGCDetailsRequest(IntPtr pvecPublishedFileID, uint unNumPublishedFileIDs)
+        {
+            Write("CreateQueryUGCDetailsRequest");
+            if (pvecPublishedFileID == IntPtr.Zero || unNumPublishedFileIDs == 0)
+            {
+                return ulong.MaxValue;
+            }
+
+            var handle = CreateOne();
+            MutexHelper.Wait("UGCQueries", delegate
+            {
+                var request = UGCQueries.Find(query => query.Handle == handle);
+                if (request == null)
+                {
+                    return;
+                }
+
+                for (uint index = 0; index < unNumPublishedFileIDs; index++)
+                {
+                    var offset = checked((int)((ulong)index * sizeof(ulong)));
+                    request.return_only.Add(unchecked((ulong)Marshal.ReadInt64(pvecPublishedFileID, offset)));
+                }
+            });
+            return handle;
+        }
+
+        public SteamAPICall_t SendQueryUGCRequest(UGCQueryHandle_t handle)
+        {
+            Write("SendQueryUGCRequest");
+            SteamAPICall_t APICall = k_uAPICallInvalid;
+            MutexHelper.Wait("UGCQueries", delegate
+            {
+                try
+                {
+                    var request = UGCQueries.Find(u => u.Handle == handle);
+                    if (request != null)
+                    {
+                        if (request.ReturnAll)
+                        {
+                            request.results = WorkshopManager
+                                .GetSubscriptions(includeLocallyDisabled: false)
+                                .Select(subscription => subscription.PublishedFileId)
+                                .ToList();
+                        }
+
+                        if (request.return_only.Any())
+                        {
+                            foreach (var item in request.return_only)
+                            {
+                                request.results.Add(item);
+                            }
+                        }
+
+                        SteamUGCQueryCompleted_t data = new SteamUGCQueryCompleted_t()
+                        {
+                            m_handle = handle,
+                            m_eResult = EResult.k_EResultOK,
+                            m_unNumResultsReturned = (uint)request.results.Count(),
+                            m_unTotalMatchingResults = (uint)request.results.Count(),
+                            m_bCachedData = false, 
+                            m_rgchNextCursor = new byte[256],
+                        };
+                        APICall = CallbackManager.AddCallbackResult(data);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Write($"SendQueryUGCRequest {ex}");
+                }
+            });
+            return APICall;
+        }
+
+        public bool GetQueryUGCResult(UGCQueryHandle_t handle, uint index, ref SteamUGCDetails_t pDetails)
+        {
+            Write("GetQueryUGCResult");
+
+            bool Result = false;
+            UGC UGC = default;
+
+            MutexHelper.Wait("UGCQueries", delegate
+            {
+                UGC = UGCQueries.Find(u => u.Handle == handle);
+            });
+
+            if (UGC != null && (index < UGC.results.Count))
+            {
+                var publishedFileId = UGC.results[(int)index];
+                WorkshopManager.TryGetItem(publishedFileId, out var item);
+                pDetails = CreateDetails(
+                    item,
+                    publishedFileId,
+                    item == null ? EResult.k_EResultFileNotFound : EResult.k_EResultOK);
+                Result = true;
+            }
+
+            return Result;
+        }
+
+        public bool GetQueryUGCPreviewURL(UGCQueryHandle_t handle, uint index, string pchURL, uint cchURLSize)
+        {
+            return GetQueryUGCPreviewURL(handle, index, IntPtr.Zero, cchURLSize);
+        }
+
+        public bool GetQueryUGCPreviewURL(UGCQueryHandle_t handle, uint index, IntPtr pchURL, uint cchURLSize)
+        {
+            Write("GetQueryUGCPreviewURL");
+            return false;
+        }
+
+        public bool GetQueryUGCMetadata(UGCQueryHandle_t handle, uint index, string pchMetadata, uint cchMetadatasize)
+        {
+            return GetQueryUGCMetadata(handle, index, IntPtr.Zero, cchMetadatasize);
+        }
+
+        public bool GetQueryUGCMetadata(UGCQueryHandle_t handle, uint index, IntPtr pchMetadata, uint cchMetadatasize)
+        {
+            Write("GetQueryUGCMetadata");
+            return false;
+        }
+
+        internal uint GetQueryUGCNumTags(UGCQueryHandle_t handle, uint index)
+        {
+            Write("GetQueryUGCNumTags");
+            return 0;
+        }
+
+        public bool GetQueryUGCChildren(UGCQueryHandle_t handle, uint index, ref PublishedFileId_t[] pvecPublishedFileID, uint cMaxEntries)
+        {
+            return GetQueryUGCChildren(handle, index, IntPtr.Zero, cMaxEntries);
+        }
+
+        public bool GetQueryUGCChildren(UGCQueryHandle_t handle, uint index, IntPtr pvecPublishedFileID, uint cMaxEntries)
+        {
+            Write("GetQueryUGCChildren");
+            return false;
+        }
+
+        internal bool GetQueryUGCTag(UGCQueryHandle_t handle, uint index, uint indexTag, string pchValue, uint cchValueSize)
+        {
+            return GetQueryUGCTag(handle, index, indexTag, IntPtr.Zero, cchValueSize);
+        }
+
+        internal bool GetQueryUGCTag(UGCQueryHandle_t handle, uint index, uint indexTag, IntPtr pchValue, uint cchValueSize)
+        {
+            Write("GetQueryUGCTag");
+            return false;
+        }
+
+        internal bool GetQueryUGCTagDisplayName(UGCQueryHandle_t handle, uint index, uint indexTag, string pchValue, uint cchValueSize)
+        {
+            return GetQueryUGCTagDisplayName(handle, index, indexTag, IntPtr.Zero, cchValueSize);
+        }
+
+        internal bool GetQueryUGCTagDisplayName(UGCQueryHandle_t handle, uint index, uint indexTag, IntPtr pchValue, uint cchValueSize)
+        {
+            Write("GetQueryUGCTagDisplayName");
+            return false;
+        }
+
+        public bool GetQueryUGCStatistic(UGCQueryHandle_t handle, uint index, int eStatType, ulong pStatValue)
+        {
+            return GetQueryUGCStatistic(handle, index, eStatType, IntPtr.Zero);
+        }
+
+        public bool GetQueryUGCStatistic(UGCQueryHandle_t handle, uint index, int eStatType, IntPtr pStatValue)
+        {
+            Write("GetQueryUGCStatistic");
+            return false;
+        }
+
+        public uint GetQueryUGCNumAdditionalPreviews(UGCQueryHandle_t handle, uint index)
+        {
+            Write("GetQueryUGCNumAdditionalPreviews");
+            return 0;
+        }
+
+        public bool GetQueryUGCAdditionalPreview(UGCQueryHandle_t handle, uint index, uint previewIndex, string pchURLOrVideoID, uint cchURLSize, string pchOriginalFileName, uint cchOriginalFileNameSize, int pPreviewType)
+        {
+            return GetQueryUGCAdditionalPreview(handle, index, previewIndex, IntPtr.Zero, cchURLSize, IntPtr.Zero, cchOriginalFileNameSize, IntPtr.Zero);
+        }
+
+        public bool GetQueryUGCAdditionalPreview(UGCQueryHandle_t handle, uint index, uint previewIndex, IntPtr pchURLOrVideoID, uint cchURLSize, IntPtr pchOriginalFileName, uint cchOriginalFileNameSize, IntPtr pPreviewType)
+        {
+            Write("GetQueryUGCAdditionalPreview");
+            return false;
+        }
+
+        public uint GetQueryUGCNumKeyValueTags(UGCQueryHandle_t handle, uint index)
+        {
+            Write("GetQueryUGCNumKeyValueTags");
+            return 0;
+        }
+
+        public bool GetQueryUGCKeyValueTag(UGCQueryHandle_t handle, uint index, uint keyValueTagIndex, string pchKey, uint cchKeySize, string pchValue, uint cchValueSize)
+        {
+            return GetQueryUGCKeyValueTag(handle, index, keyValueTagIndex, IntPtr.Zero, cchKeySize, IntPtr.Zero, cchValueSize);
+        }
+
+        public bool GetQueryUGCKeyValueTag(UGCQueryHandle_t handle, uint index, uint keyValueTagIndex, IntPtr pchKey, uint cchKeySize, IntPtr pchValue, uint cchValueSize)
+        {
+            Write("GetQueryUGCKeyValueTag");
+            return false;
+        }
+
+        public bool GetQueryUGCKeyValueTag(UGCQueryHandle_t handle, uint index, string pchKey, string pchValue, uint cchValueSize)
+        {
+            return GetQueryUGCKeyValueTag(handle, index, pchKey, IntPtr.Zero, cchValueSize);
+        }
+
+        public bool GetQueryUGCKeyValueTag(UGCQueryHandle_t handle, uint index, string pchKey, IntPtr pchValue, uint cchValueSize)
+        {
+            Write("GetQueryUGCKeyValueTag");
+            return false;
+        }
+
+        public bool ReleaseQueryUGCRequest(UGCQueryHandle_t handle)
+        {
+            Write("ReleaseQueryUGCRequest");
+            bool Return = false;
+            MutexHelper.Wait("UGCQueries", delegate
+            {
+                var UGC = UGCQueries.Find(u => u.Handle == handle);
+                if (UGC != null)
+                {
+                    UGCQueries.Remove(UGC);
+                    Return = true;
+                }
+            });
+            return Return;
+        }
+
+        public bool AddRequiredTag(UGCQueryHandle_t handle, string pTagName)
+        {
+            Write($"AddRequiredTag (QueryHandle = {handle}, TagName = {pTagName})");
+            return true;
+        }
+
+        public bool AddRequiredTagGroup(UGCQueryHandle_t handle, IntPtr pTagGroups) 
+        {
+            Write("AddRequiredTagGroup");
+            return false;
+        }
+
+        public bool AddExcludedTag(UGCQueryHandle_t handle, string pTagName)
+        {
+            Write("AddExcludedTag");
+            return false;
+        }
+
+        public bool SetReturnOnlyIDs(UGCQueryHandle_t handle, bool bReturnOnlyIDs)
+        {
+            Write("SetReturnOnlyIDs");
+            return true;
+        }
+
+        public bool SetReturnKeyValueTags(UGCQueryHandle_t handle, bool bReturnKeyValueTags)
+        {
+            Write("SetReturnKeyValueTags");
+            return true;
+        }
+
+        public bool SetReturnLongDescription(UGCQueryHandle_t handle, bool bReturnLongDescription)
+        {
+            Write("SetReturnLongDescription");
+            return true;
+        }
+
+        public bool SetReturnMetadata(UGCQueryHandle_t handle, bool bReturnMetadata)
+        {
+            Write("SetReturnMetadata");
+            return true;
+        }
+
+        public bool SetReturnChildren(UGCQueryHandle_t handle, bool bReturnChildren)
+        {
+            Write("SetReturnChildren");
+            return true;
+        }
+
+        public bool SetReturnAdditionalPreviews(UGCQueryHandle_t handle, bool bReturnAdditionalPreviews)
+        {
+            Write("SetReturnAdditionalPreviews");
+            return true;
+        }
+
+        public bool SetReturnTotalOnly(UGCQueryHandle_t handle, bool bReturnTotalOnly)
+        {
+            Write("SetReturnTotalOnly");
+            return true;
+        }
+
+        public bool SetReturnPlaytimeStats(UGCQueryHandle_t handle, uint unDays)
+        {
+            Write("SetReturnPlaytimeStats");
+            return true;
+        }
+
+        public bool SetLanguage(UGCQueryHandle_t handle, string pchLanguage)
+        {
+            Write("SetLanguage");
+            return true;
+        }
+
+        public bool SetAllowCachedResponse(UGCQueryHandle_t handle, uint unMaxAgeSeconds)
+        {
+            Write("SetAllowCachedResponse");
+            return true;
+        }
+
+        public bool SetAdminQuery(UGCUpdateHandle_t handle, bool bAdminQuery)
+        {
+            Write("SetAdminQuery");
+            return true;
+        }
+
+        public bool SetCloudFileNameFilter(UGCQueryHandle_t handle, string pMatchCloudFileName)
+        {
+            Write("SetCloudFileNameFilter");
+            return true;
+        }
+
+        public bool SetMatchAnyTag(UGCQueryHandle_t handle, bool bMatchAnyTag)
+        {
+            Write("SetMatchAnyTag");
+            return true;
+        }
+
+        public bool SetSearchText(UGCQueryHandle_t handle, string pSearchText)
+        {
+            Write("SetSearchText");
+            return true;
+        }
+
+        public bool SetRankedByTrendDays(UGCQueryHandle_t handle, uint unDays)
+        {
+            Write("SetRankedByTrendDays");
+            return true;
+        }
+
+        public bool AddRequiredKeyValueTag(UGCQueryHandle_t handle, string pKey, string pValue)
+        {
+            Write("AddRequiredKeyValueTag");
+            return true;
+        }
+
+        public SteamAPICall_t RequestUGCDetails(ulong nPublishedFileID, uint unMaxAgeSeconds)
+        {
+            Write("RequestUGCDetails");
+            var cached = WorkshopManager.TryGetItem(nPublishedFileID, out var cachedItem);
+            var pending = new SteamUGCRequestUGCDetailsResult_t
+            {
+                Details = CreateDetails(
+                    cachedItem,
+                    nPublishedFileID,
+                    EResult.k_EResultPending),
+                CachedData = cached
+            };
+
+            return WorkQueue.EnqueueCallbackResult(
+                pending,
+                () =>
+                {
+                    var item = cachedItem;
+                    if (item == null)
+                    {
+                        item = APIClient.GetWorkshopItem(nPublishedFileID);
+                    }
+
+                    return new SteamUGCRequestUGCDetailsResult_t
+                    {
+                        Details = CreateDetails(
+                            item,
+                            nPublishedFileID,
+                            item == null ? EResult.k_EResultFileNotFound : EResult.k_EResultOK),
+                        CachedData = cached
+                    };
+                },
+                name: $"Request Workshop details {nPublishedFileID}",
+                highPriority: true);
+        }
+
+        public SteamAPICall_t CreateItem(uint nConsumerAppId, int eFileType)
+        {
+            Write("CreateItem");
+            // CreateItemResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public UGCUpdateHandle_t StartItemUpdate(uint nConsumerAppId, ulong nPublishedFileID) 
+        {
+            Write("StartItemUpdate");
+            return (UGCUpdateHandle_t)0;
+        }
+
+        public bool SetItemTitle(UGCQueryHandle_t handle, string pchTitle) 
+        {
+            Write("SetItemTitle");
+            return false;
+        }
+
+        public bool SetItemDescription(UGCQueryHandle_t handle, string pchDescription) 
+        {
+            Write("SetItemDescription");
+            return false;
+        }
+
+        public bool SetItemUpdateLanguage(UGCQueryHandle_t handle, string pchLanguage) 
+        {
+            Write("SetItemUpdateLanguage");
+            return false;
+        }
+
+        public bool SetItemMetadata(UGCQueryHandle_t handle, string pchMetaData)
+        {
+            Write("SetItemMetadata");
+            return false;
+        }
+
+        public bool SetTimeCreatedDateRange(UGCQueryHandle_t handle, IntPtr rtStart, IntPtr rtEnd)
+        {
+            Write("SetTimeCreatedDateRange");
+            return false;
+        }
+
+        public bool SetTimeUpdatedDateRange(UGCQueryHandle_t handle, IntPtr rtStart, IntPtr rtEnd)
+        {
+            Write("SetTimeUpdatedDateRange");
+            return false;
+        }
+
+        public bool SetItemVisibility(UGCQueryHandle_t handle, int eVisibility) 
+        {
+            Write("SetItemVisibility");
+            return false;
+        }
+
+        public bool SetItemTags(ulong updateHandle, IntPtr pTags)
+        {
+            Write("SetItemTags");
+            return false;
+        }
+
+        public bool SetItemTags(ulong updateHandle, IntPtr pTags, bool bAllowAdminTags)
+        {
+            Write("SetItemTags");
+            return SetItemTags(updateHandle, pTags);
+        }
+
+        public bool SetItemContent(UGCQueryHandle_t handle, string pszContentFolder) 
+        {
+            Write("SetItemContent");
+            return false;
+        }
+
+        public bool SetItemPreview(UGCQueryHandle_t handle, string pszPreviewFile) 
+        {
+            Write("SetItemPreview");
+            return false;
+        }
+
+        public bool SetAllowLegacyUpload(UGCQueryHandle_t handle, bool bAllowLegacyUpload) 
+        {
+            Write("SetAllowLegacyUpload");
+            return false;
+        }
+
+        public bool RemoveAllItemKeyValueTags(UGCQueryHandle_t handle) 
+        {
+            Write("RemoveAllItemKeyValueTags");
+            return false;
+        }
+
+        public bool RemoveItemKeyValueTags(UGCQueryHandle_t handle, string pchKey) 
+        {
+            Write("RemoveItemKeyValueTags");
+            return false;
+        }
+
+        public bool AddItemKeyValueTag(UGCQueryHandle_t handle, string pchKey, string pchValue) 
+        {
+            Write("AddItemKeyValueTag");
+            return false;
+        }
+
+        public bool AddItemPreviewFile(UGCQueryHandle_t handle, string pszPreviewFile, int type) 
+        {
+            Write("AddItemPreviewFile");
+            return false;
+        }
+
+        public bool AddItemPreviewVideo(UGCQueryHandle_t handle, string pszVideoID) 
+        {
+            Write("AddItemPreviewVideo");
+            return false;
+        }
+
+        public bool UpdateItemPreviewFile(UGCQueryHandle_t handle, uint index, string pszPreviewFile) 
+        {
+            Write("UpdateItemPreviewFile");
+            return false;
+        }
+
+        public bool UpdateItemPreviewVideo(UGCQueryHandle_t handle, uint index, string pszVideoID) 
+        {
+            Write("UpdateItemPreviewVideo");
+            return false;
+        }
+
+        public bool RemoveItemPreview(UGCQueryHandle_t handle, uint index) 
+        {
+            Write("RemoveItemPreview");
+            return false;
+        }
+
+        public bool AddContentDescriptor(UGCQueryHandle_t handle, int descid)
+        {
+            Write("AddContentDescriptor");
+            return false;
+        }
+
+        public bool RemoveContentDescriptor(UGCQueryHandle_t handle, int descid)
+        {
+            Write("RemoveContentDescriptor");
+            return false;
+        }
+
+        public bool SetRequiredGameVersions(UGCQueryHandle_t handle, string pszGameBranchMin, string pszGameBranchMax)
+        {
+            Write("SetRequiredGameVersions");
+            return false;
+        }
+
+        public SteamAPICall_t SubmitItemUpdate(UGCQueryHandle_t handle, string pchChangeNote) 
+        {
+            Write("SubmitItemUpdate");
+            // SubmitItemUpdateResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public int GetItemUpdateProgress(UGCQueryHandle_t handle, ulong punBytesProcessed, ulong punBytesTotal)
+        {
+            Write("GetItemUpdateProgress");
+            return 0;
+        }
+
+        public SteamAPICall_t SetUserItemVote(ulong nPublishedFileID, bool bVoteUp)
+        {
+            Write("SetUserItemVote");
+            // SetUserItemVoteResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t GetUserItemVote(ulong nPublishedFileID)
+        {
+            Write("GetUserItemVote");
+            // GetUserItemVoteResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t AddItemToFavorites(uint nAppId, ulong nPublishedFileID)
+        {
+            Write("AddItemToFavorites");
+            // UserFavoriteItemsListChanged_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t RemoveItemFromFavorites(uint nAppId, ulong nPublishedFileID)
+        {
+            Write("RemoveItemFromFavorites");
+            // UserFavoriteItemsListChanged_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t SubscribeItem(PublishedFileId_t nPublishedFileID) 
+        {
+            Write("SubscribeItem");
+            var pending = new RemoteStorageSubscribePublishedFileResult_t
+            {
+                m_eResult = EResult.k_EResultPending,
+                m_nPublishedFileId = nPublishedFileID
+            };
+            return WorkQueue.EnqueueCallbackResult(
+                pending,
+                () =>
+                {
+                    var localItem = WorkshopManager.TryReadInstalledItem(nPublishedFileID);
+                    if (localItem != null && APIClient.PutWorkshopItem(localItem) == null)
+                    {
+                        return new RemoteStorageSubscribePublishedFileResult_t
+                        {
+                            m_eResult = EResult.k_EResultNoConnection,
+                            m_nPublishedFileId = nPublishedFileID
+                        };
+                    }
+
+                    var response = APIClient.SubscribeWorkshopItem(nPublishedFileID);
+                    if (response?.Success != true || response.Subscription == null)
+                    {
+                        return new RemoteStorageSubscribePublishedFileResult_t
+                        {
+                            m_eResult = response == null
+                                ? EResult.k_EResultNoConnection
+                                : EResult.k_EResultFileNotFound,
+                            m_nPublishedFileId = nPublishedFileID
+                        };
+                    }
+
+                    WorkshopManager.UpsertSubscription(response.Subscription);
+                    if (WorkshopManager.TryGetInstallInfo(nPublishedFileID, out _))
+                    {
+                        NativeCallbackQueue.Enqueue(() =>
+                            CallbackManager.AddCallback(new ItemInstalled_t
+                             {
+                                 m_unAppID = SteamEmulator.AppID,
+                                 m_nPublishedFileId = nPublishedFileID,
+                                 // Emulator-managed Workshop content is not backed
+                                 // by SteamPipe UGC or depot manifests.
+                                 m_hLegacyContent = 0,
+                                 m_unManifestID = 0
+                             }));
+                    }
+
+                    return new RemoteStorageSubscribePublishedFileResult_t
+                    {
+                        m_eResult = EResult.k_EResultOK,
+                        m_nPublishedFileId = nPublishedFileID
+                    };
+                },
+                name: $"Subscribe Workshop item {nPublishedFileID}",
+                highPriority: true);
+        }
+
+        public SteamAPICall_t UnsubscribeItem(PublishedFileId_t nPublishedFileID) 
+        {
+            Write("UnsubscribeItem");
+            var pending = new RemoteStorageUnsubscribePublishedFileResult_t
+            {
+                m_eResult = EResult.k_EResultPending,
+                m_nPublishedFileId = nPublishedFileID
+            };
+            return WorkQueue.EnqueueCallbackResult(
+                pending,
+                () =>
+                {
+                    var response = APIClient.UnsubscribeWorkshopItem(nPublishedFileID);
+                    if (response?.Success != true)
+                    {
+                        return new RemoteStorageUnsubscribePublishedFileResult_t
+                        {
+                            m_eResult = response == null
+                                ? EResult.k_EResultNoConnection
+                                : EResult.k_EResultFail,
+                            m_nPublishedFileId = nPublishedFileID
+                        };
+                    }
+
+                    WorkshopManager.RemoveSubscription(nPublishedFileID);
+                    return new RemoteStorageUnsubscribePublishedFileResult_t
+                    {
+                        m_eResult = EResult.k_EResultOK,
+                        m_nPublishedFileId = nPublishedFileID
+                    };
+                },
+                name: $"Unsubscribe Workshop item {nPublishedFileID}",
+                highPriority: true);
+        }
+
+        public uint GetNumSubscribedItems() 
+        {
+            Write("GetNumSubscribedItems");
+            return checked((uint)WorkshopManager.GetSubscriptions(false).Length);
+        }
+
+        public uint GetNumSubscribedItems(bool bIncludeLocallyDisabled)
+        {
+            Write("GetNumSubscribedItems");
+            return checked((uint)WorkshopManager.GetSubscriptions(bIncludeLocallyDisabled).Length);
+        }
+
+        public uint GetSubscribedItems(IntPtr pvecPublishedFileID, uint cMaxEntries)
+        {
+            Write("GetSubscribedItems");
+            if (pvecPublishedFileID == IntPtr.Zero || cMaxEntries == 0)
+            {
+                return 0;
+            }
+
+            var subscriptions = WorkshopManager.GetSubscriptions(false);
+            var count = Math.Min((ulong)cMaxEntries, (ulong)subscriptions.Length);
+            for (ulong index = 0; index < count; index++)
+            {
+                var offset = checked((int)(index * sizeof(ulong)));
+                Marshal.WriteInt64(
+                    pvecPublishedFileID,
+                    offset,
+                    unchecked((long)subscriptions[index].PublishedFileId));
+            }
+
+            return checked((uint)count);
+        }
+
+        public uint GetSubscribedItems(IntPtr pvecPublishedFileID, uint cMaxEntries, bool bIncludeLocallyDisabled)
+        {
+            Write("GetSubscribedItems");
+            if (pvecPublishedFileID == IntPtr.Zero || cMaxEntries == 0)
+            {
+                return 0;
+            }
+
+            var subscriptions = WorkshopManager.GetSubscriptions(bIncludeLocallyDisabled);
+            var count = Math.Min((ulong)cMaxEntries, (ulong)subscriptions.Length);
+            for (ulong index = 0; index < count; index++)
+            {
+                var offset = checked((int)(index * sizeof(ulong)));
+                Marshal.WriteInt64(
+                    pvecPublishedFileID,
+                    offset,
+                    unchecked((long)subscriptions[index].PublishedFileId));
+            }
+
+            return checked((uint)count);
+        }
+
+        public uint GetItemState(ulong nPublishedFileID)
+        {
+            Write("GetItemState");
+            return WorkshopManager.GetItemState(nPublishedFileID);
+        }
+
+        public bool GetItemInstallInfo(ulong nPublishedFileID, ulong punSizeOnDisk, string pchFolder, uint cchFolderSize, uint punTimeStamp)
+        {
+            return GetItemInstallInfo(nPublishedFileID, IntPtr.Zero, IntPtr.Zero, cchFolderSize, IntPtr.Zero);
+        }
+
+        public bool GetItemInstallInfo(ulong nPublishedFileID, IntPtr punSizeOnDisk, IntPtr pchFolder, uint cchFolderSize, IntPtr punTimeStamp)
+        {
+            Write("GetItemInstallInfo");
+            if (pchFolder == IntPtr.Zero ||
+                cchFolderSize == 0 ||
+                cchFolderSize > int.MaxValue ||
+                !WorkshopManager.TryGetInstallInfo(nPublishedFileID, out var info))
+            {
+                return false;
+            }
+
+            var requiredFolderBytes = Encoding.UTF8.GetByteCount(info.Folder ?? string.Empty) + 1;
+            if (requiredFolderBytes > cchFolderSize)
+            {
+                return false;
+            }
+
+            if (!NativeStringCache.WriteUtf8Buffer(
+                    pchFolder,
+                    checked((int)cchFolderSize),
+                    info.Folder))
+            {
+                return false;
+            }
+
+            if (punSizeOnDisk != IntPtr.Zero)
+            {
+                Marshal.WriteInt64(punSizeOnDisk, unchecked((long)info.SizeOnDisk));
+            }
+            if (punTimeStamp != IntPtr.Zero)
+            {
+                Marshal.WriteInt32(punTimeStamp, unchecked((int)info.Timestamp));
+            }
+            return true;
+        }
+
+        public bool GetItemDownloadInfo(ulong nPublishedFileID, ulong punBytesDownloaded, ulong punBytesTotal)
+        {
+            Write("GetItemDownloadInfo");
+            return false;
+        }
+
+        public bool DownloadItem(ulong nPublishedFileID, bool bHighPriority)
+        {
+            Write("DownloadItem");
+            return false;
+        }
+
+        public bool BInitWorkshopForGameServer(uint unWorkshopDepotID, string pszFolder)
+        {
+            Write("BInitWorkshopForGameServer");
+            return false;
+        }
+
+        public void SuspendDownloads(bool bSuspend)
+        {
+            Write("SuspendDownloads");
+            //
+        }
+
+        public SteamAPICall_t StartPlaytimeTracking(PublishedFileId_t pvecPublishedFileID, uint unNumPublishedFileIDs)
+        {
+            Write("StartPlaytimeTracking");
+            SteamAPICall_t ApiCall = k_uAPICallInvalid;
+            MutexHelper.Wait("StartPlaytimeTracking", delegate
+            {
+                try
+                {
+                    StopPlaytimeTrackingResult_t data = new StopPlaytimeTrackingResult_t()
+                    {
+                        m_eResult = EResult.k_EResultOK
+                    };
+                    ApiCall = CallbackManager.AddCallbackResult(data);
+                }
+                catch (Exception ex)
+                {
+                    Write($"StartPlaytimeTracking {ex}");
+                }
+            });
+            return ApiCall;
+        }
+
+        public SteamAPICall_t StopPlaytimeTracking(ulong pvecPublishedFileID, uint unNumPublishedFileIDs)
+        {
+            Write("StopPlaytimeTracking");
+            SteamAPICall_t ApiCall = k_uAPICallInvalid;
+            MutexHelper.Wait("StopPlaytimeTracking", delegate
+            {
+                try
+                {
+                    StopPlaytimeTrackingResult_t data = new StopPlaytimeTrackingResult_t()
+                    {
+                        m_eResult = EResult.k_EResultOK
+                    };
+                    ApiCall = CallbackManager.AddCallbackResult(data);
+                }
+                catch (Exception ex)
+                {
+                    Write($"StopPlaytimeTracking {ex}");
+                }
+            });
+            return ApiCall;
+
+        }
+
+        public SteamAPICall_t StopPlaytimeTrackingForAllItems()
+        {
+            try
+            {
+                Write("StopPlaytimeTracking");
+                //StopPlaytimeTrackingResult_t data = new StopPlaytimeTrackingResult_t()
+                //{
+                //    m_eResult = EResult.k_EResultOK
+                //};
+                //return CallbackManager.AddCallbackResult(data, StopPlaytimeTrackingResult_t.k_iCallback);
+            }
+            catch (Exception ex)
+            {
+                Write($"StopPlaytimeTracking {ex}");
+            }
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t AddDependency(ulong nParentPublishedFileID, ulong nChildPublishedFileID)
+        {
+            Write("AddDependency");
+            // AddAppDependencyResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t RemoveDependency(ulong nParentPublishedFileID, ulong nChildPublishedFileID)
+        {
+            Write("RemoveDependency");
+            // RemoveAppDependencyResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t AddAppDependency(ulong nPublishedFileID, uint nAppID)
+        {
+            Write("AddAppDependency");
+            // AddAppDependencyResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t RemoveAppDependency(ulong nPublishedFileID, uint nAppID)
+        {
+            Write("RemoveAppDependency");
+            // RemoveAppDependencyResult_t
+            return 0;
+        }
+
+        public SteamAPICall_t GetAppDependencies(ulong nPublishedFileID)
+        {
+            Write("GetAppDependencies");
+            // GetAppDependenciesResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public SteamAPICall_t DeleteItem(ulong nPublishedFileID)
+        {
+            Write("DeleteItem");
+            // DeleteItemResult_t
+            return k_uAPICallInvalid;
+        }
+
+        public bool ShowWorkshopEULA()
+        {
+            Write("ShowWorkshopEULA");
+            return false;
+        }
+
+        public SteamAPICall_t GetWorkshopEULAStatus()
+        {
+            Write("GetWorkshopEULAStatus");
+            return k_uAPICallInvalid;
+        }
+
+        public uint GetNumSupportedGameVersions(UGCQueryHandle_t handle, uint index)
+        {
+            Write("GetNumSupportedGameVersions");
+            return 0;
+        }
+
+        public bool GetSupportedGameVersionData(UGCQueryHandle_t handle, uint index, uint versionIndex, string pchGameBranchMin, string pchGameBranchMax, uint cchGameBranchSize)
+        {
+            return GetSupportedGameVersionData(handle, index, versionIndex, IntPtr.Zero, IntPtr.Zero, cchGameBranchSize);
+        }
+
+        public bool GetSupportedGameVersionData(UGCQueryHandle_t handle, uint index, uint versionIndex, IntPtr pchGameBranchMin, IntPtr pchGameBranchMax, uint cchGameBranchSize)
+        {
+            Write("GetSupportedGameVersionData");
+            return false;
+        }
+
+        public uint GetQueryUGCContentDescriptors(UGCQueryHandle_t handle, uint index, IntPtr pvecDescriptors, uint cMaxEntries)
+        {
+            Write("GetQueryUGCContentDescriptors");
+            return 0;
+        }
+
+        public uint GetUserContentDescriptorPreferences(IntPtr pvecDescriptors, uint cMaxEntries)
+        {
+            Write("GetUserContentDescriptorPreferences");
+            return 0;
+        }
+
+        public bool SetItemsDisabledLocally(ulong pvecPublishedFileIDs, uint unNumPublishedFileIDs, bool bDisabledLocally)
+        {
+            Write("SetItemsDisabledLocally");
+            return false;
+        }
+
+        public bool SetSubscriptionsLoadOrder(ulong pvecPublishedFileIDs, uint unNumPublishedFileIDs)
+        {
+            Write("SetSubscriptionsLoadOrder");
+            return false;
+        }
+
+        ////////////////////////////////////////////////////////////////////////////
+        
+        internal UGCQueryHandle_t CreateOne(bool returnAll = false)
+        {
+            UGC instance = new UGC();
+
+            MutexHelper.Wait("UGCQueries", delegate
+            {
+                instance.ReturnAll = returnAll;
+                instance.Handle = Handle;
+                Handle++;
+                UGCQueries.Add(instance);
+            });
+
+            return instance.Handle;
+        }
+
+        void set_details(PublishedFileId_t id, IntPtr ptrDetails)
+        {
+            try
+            {
+                SteamUGCDetails_t pDetails = Marshal.PtrToStructure<SteamUGCDetails_t>(ptrDetails);
+                pDetails.m_eResult = EResult.k_EResultOK;
+                pDetails.m_nPublishedFileId = id;
+                pDetails.m_eFileType = EWorkshopFileType.k_EWorkshopFileTypeCommunity;
+                pDetails.m_nCreatorAppID = SteamEmulator.AppID;
+                pDetails.m_nConsumerAppID = SteamEmulator.AppID;
+
+                Marshal.StructureToPtr(pDetails, ptrDetails, false);
+            }
+            catch (Exception ex)
+            {
+                Write(ex.ToString());
+            }
+        }
+
+        private static SteamUGCDetails_t CreateDetails(
+            APIClient.SkyNetWorkshopItemDto item,
+            ulong publishedFileId,
+            EResult result)
+        {
+            var fileType = item != null && Enum.IsDefined(typeof(EWorkshopFileType), item.FileType)
+                ? (EWorkshopFileType)item.FileType
+                : EWorkshopFileType.k_EWorkshopFileTypeCommunity;
+            var visibility = item != null &&
+                             Enum.IsDefined(typeof(ERemoteStoragePublishedFileVisibility), item.Visibility)
+                ? (ERemoteStoragePublishedFileVisibility)item.Visibility
+                : ERemoteStoragePublishedFileVisibility.k_ERemoteStoragePublishedFileVisibilityPublic;
+            return new SteamUGCDetails_t
+            {
+                m_nPublishedFileId = publishedFileId,
+                m_eResult = result,
+                m_eFileType = fileType,
+                m_nCreatorAppID = item?.CreatorAppId ?? SteamEmulator.AppID,
+                m_nConsumerAppID = item?.ConsumerAppId ?? SteamEmulator.AppID,
+                m_rgchTitle = item?.Title ?? string.Empty,
+                m_rgchDescription = item?.Description ?? string.Empty,
+                m_ulSteamIDOwner = item?.OwnerSteamId ?? 0,
+                m_rtimeCreated = item?.TimeCreated ?? 0,
+                m_rtimeUpdated = item?.TimeUpdated ?? 0,
+                m_rtimeAddedToUserList = 0,
+                m_eVisibility = visibility,
+                m_bBanned = item?.Banned ?? false,
+                m_bAcceptedForUse = item?.AcceptedForUse ?? false,
+                m_bTagsTruncated = false,
+                m_rgchTags = item?.Tags ?? string.Empty,
+                m_hFile = 0,
+                m_hPreviewFile = 0,
+                m_pchFileName = item?.FileName ?? string.Empty,
+                m_nFileSize = ClampToInt(item?.FileSize ?? 0),
+                m_nPreviewFileSize = 0,
+                m_rgchURL = item?.PreviewUrl ?? string.Empty,
+                m_unVotesUp = item?.VotesUp ?? 0,
+                m_unVotesDown = item?.VotesDown ?? 0,
+                m_flScore = item?.Score ?? 0f,
+                m_unNumChildren = 0,
+                m_ulTotalFilesSize = ToUnsignedSize(item?.TotalFilesSize ?? 0)
+            };
+        }
+
+        private static int ClampToInt(long value)
+        {
+            return value <= 0 ? 0 : value >= int.MaxValue ? int.MaxValue : (int)value;
+        }
+
+        private static ulong ToUnsignedSize(long value)
+        {
+            return value <= 0 ? 0UL : (ulong)value;
+        }
+
+        internal class UGC
+        {
+            public UGCQueryHandle_t Handle;
+            public List<PublishedFileId_t> return_only;
+            public List<PublishedFileId_t> results;
+            public bool ReturnAll;
+
+            public UGC()
+            {
+                return_only = new List<PublishedFileId_t>();
+                results = new List<PublishedFileId_t>();
+            }
+        }
+    }
+
+
+}
