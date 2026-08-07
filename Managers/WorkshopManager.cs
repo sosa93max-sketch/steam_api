@@ -30,7 +30,33 @@ namespace SKYNET.Managers
 
         public static void Initialize()
         {
+            CleanupLegacyInGameWorkshopFolder();
             EnsureIdentity((ulong)SteamEmulator.SteamID, SteamEmulator.AppID);
+        }
+
+        /// <summary>
+        /// Removes the workshop cache an older build kept inside the game folder
+        /// (D2MAX\Workshop next to dota2.exe). Dota scans its own tree at startup
+        /// and refuses to run when that folder exists; the cache now lives under
+        /// %LOCALAPPDATA%\D2Max\Workshop instead, so the game folder only keeps
+        /// the ini and logs. The subscriptions are re-fetched from the server on
+        /// logon, so the local snapshot is only an offline cache.
+        /// </summary>
+        private static void CleanupLegacyInGameWorkshopFolder()
+        {
+            try
+            {
+                var legacy = Common.DataPath("Workshop");
+                if (Directory.Exists(legacy))
+                {
+                    Directory.Delete(legacy, true);
+                    SteamEmulator.Write("Workshop", $"Removed legacy in-game workshop cache {legacy}");
+                }
+            }
+            catch (Exception ex)
+            {
+                SteamEmulator.Write("Workshop", $"Unable to remove legacy workshop cache: {ex.Message}");
+            }
         }
 
         public static void ApplyServerSnapshot(
@@ -389,7 +415,7 @@ namespace SKYNET.Managers
             var candidates = new List<string>();
 
             AddContentRootCandidates(candidates, SteamEmulator.WorkshopContentRoot, appId, itemId);
-            AddCandidate(candidates, Common.DataPath("Workshop", "Content", appId, itemId));
+            AddCandidate(candidates, Path.Combine(UserWorkshopRoot(), "Content", appId, itemId));
             AddCandidate(candidates, Path.Combine(gamePath, "workshop", "content", appId, itemId));
             AddCandidate(candidates, Path.Combine(gamePath, "workshop", itemId));
 
@@ -447,11 +473,24 @@ namespace SKYNET.Managers
 
         private static string GetSnapshotPath(ulong steamId, uint appId)
         {
-            return Common.DataPath(
-                "Workshop",
+            return Path.Combine(
+                UserWorkshopRoot(),
                 appId.ToString(),
                 steamId.ToString(),
                 "subscriptions.json");
+        }
+
+        /// <summary>
+        /// Root of the workshop cache, outside the game folder so Dota never sees
+        /// an emulator-created "Workshop" directory in its own tree.
+        /// </summary>
+        private static string UserWorkshopRoot()
+        {
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(
+                string.IsNullOrEmpty(local) ? Path.GetTempPath() : local,
+                "D2Max",
+                "Workshop");
         }
 
         private static bool IsValidSubscription(
