@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 namespace SKYNET.Managers
@@ -27,15 +28,20 @@ namespace SKYNET.Managers
         private static ulong CurrentSteamId;
         private static uint CurrentAppId;
         private static bool Loaded;
+        private static int LegacyMigrationQueued;
 
         public static void Initialize()
         {
-            EnsureIdentity((ulong)SteamEmulator.SteamID, SteamEmulator.AppID);
-            // A previous build may have left an empty marker directory behind.
-            // Removing only empty directories is safe and prevents Dota from
-            // seeing a stale Workshop folder on the next process start.
-            PruneEmptyLegacyDirectories(Common.DataPath("Workshop"));
-            PruneEmptyLegacyDirectories(Path.Combine(Common.GetPath(), "SKYNET", "Workshop"));
+            var steamId = (ulong)SteamEmulator.SteamID;
+            var appId = SteamEmulator.AppID;
+            EnsureIdentity(steamId, appId);
+
+            // SteamUGC is constructed on Dota's startup path. Never inspect or
+            // migrate the old in-game Workshop tree here: a large/stale tree or
+            // a locked file can make the whole client appear to start hidden.
+            // The old snapshot is only an offline cache and can migrate after
+            // the interface has been returned to the game.
+            QueueLegacyMigration(steamId, appId);
         }
 
         public static void ApplyServerSnapshot(
@@ -278,9 +284,8 @@ namespace SKYNET.Managers
 
         private static void LoadSnapshotLocked()
         {
-            var path = GetSnapshotPaths(CurrentSteamId, CurrentAppId)
-                .FirstOrDefault(File.Exists);
-            if (string.IsNullOrEmpty(path))
+            var path = GetSnapshotPath(CurrentSteamId, CurrentAppId);
+            if (!File.Exists(path))
             {
                 return;
             }
@@ -304,12 +309,6 @@ namespace SKYNET.Managers
                         Subscriptions[subscription.PublishedFileId] = CloneSubscription(subscription);
                     }
                 }
-
-                var currentPath = GetSnapshotPath(CurrentSteamId, CurrentAppId);
-                if (!string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    MigrateLegacySnapshot(path, snapshot);
-                }
             }
             catch (Exception ex)
             {
@@ -317,9 +316,73 @@ namespace SKYNET.Managers
             }
         }
 
-        private static void MigrateLegacySnapshot(string sourcePath, WorkshopSnapshot snapshot)
+        private static void QueueLegacyMigration(ulong steamId, uint appId)
         {
-            var targetPath = GetSnapshotPath(CurrentSteamId, CurrentAppId);
+            if (Interlocked.Exchange(ref LegacyMigrationQueued, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                ThreadPool.QueueUserWorkItem(_ => MigrateLegacySnapshots(steamId, appId));
+            }
+            catch (Exception ex)
+            {
+                SteamEmulator.Write("Workshop", $"Unable to queue legacy snapshot migration: {ex.Message}");
+            }
+        }
+
+        private static void MigrateLegacySnapshots(ulong steamId, uint appId)
+        {
+            try
+            {
+                foreach (var sourcePath in GetSnapshotPaths(steamId, appId).Skip(1))
+                {
+                    if (!File.Exists(sourcePath))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var serializer = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
+                        var snapshot = serializer.Deserialize<WorkshopSnapshot>(File.ReadAllText(sourcePath));
+                        if (snapshot == null ||
+                            snapshot.SteamId != steamId ||
+                            snapshot.AppId != appId ||
+                            snapshot.Subscriptions == null)
+                        {
+                            continue;
+                        }
+
+                        MigrateLegacySnapshot(sourcePath, snapshot, steamId, appId);
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        SteamEmulator.Write("Workshop", $"Unable to read legacy snapshot: {ex.Message}");
+                    }
+                }
+
+                var gamePath = Common.GetPath();
+                PruneEmptyLegacyDirectories(
+                    Path.Combine(gamePath, Common.DataFolderName, "Workshop"));
+                PruneEmptyLegacyDirectories(Path.Combine(gamePath, "SKYNET", "Workshop"));
+            }
+            catch (Exception ex)
+            {
+                SteamEmulator.Write("Workshop", $"Legacy snapshot migration failed: {ex.Message}");
+            }
+        }
+
+        private static void MigrateLegacySnapshot(
+            string sourcePath,
+            WorkshopSnapshot snapshot,
+            ulong steamId,
+            uint appId)
+        {
+            var targetPath = GetSnapshotPath(steamId, appId);
             try
             {
                 SaveSnapshot(targetPath, snapshot);
@@ -543,14 +606,16 @@ namespace SKYNET.Managers
             // Read the old in-game cache only for migration. Never write to it:
             // Dota scans its own directory tree and a generated Workshop folder
             // can make the next process start hidden or fail altogether.
-            yield return Common.DataPath(
+            var gamePath = Common.GetPath();
+            var currentRoot = Path.Combine(gamePath, Common.DataFolderName);
+            var legacyRoot = Path.Combine(gamePath, "SKYNET");
+            yield return Path.Combine(
+                currentRoot,
                 "Workshop",
                 appId.ToString(),
                 steamId.ToString(),
                 "subscriptions.json");
 
-            var legacyRoot = Path.Combine(Common.GetPath(), "SKYNET");
-            var currentRoot = Common.DataPath();
             if (!string.Equals(legacyRoot, currentRoot, StringComparison.OrdinalIgnoreCase))
             {
                 yield return Path.Combine(

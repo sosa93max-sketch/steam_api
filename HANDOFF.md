@@ -21,6 +21,15 @@ solo lee la ruta antigua `D2MAX\Workshop`/`SKYNET\Workshop` para migrarla una
 vez y luego elimina el archivo y las carpetas que hayan quedado vacías. No borra
 recursivamente contenido Workshop real del usuario.
 
+La interfaz `SteamUGC` se crea durante el arranque crítico de Dota. La carga
+normal solo consulta el snapshot externo; la lectura/migración de snapshots
+legacy y la poda de carpetas vacías se encolan en `ThreadPool` después de
+devolver la interfaz. Así una carpeta legacy grande, bloqueada o dañada no puede
+dejar el cliente inicializado pero oculto en `Creating SteamUGC`.
+La tarea en segundo plano resuelve `D2MAX` y `SKYNET` como rutas explícitas y no
+llama a `Common.DataPath`, por lo que tampoco intenta mover todo el árbol legacy
+mientras Dota está arrancando.
+
 La implementación no crea una carpeta `Workshop` junto a `dota2.exe`. Esto evita
 que Dota inspeccione una carpeta generada por el emulador y deje la segunda
 instancia en segundo plano. También se añadió un cierre cooperativo: se marca la
