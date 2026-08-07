@@ -32,8 +32,10 @@ HTML. El hook de `ProcessExit` cubre juegos que no llaman a
 ## Verificación
 
 - `git diff --check` y revisión estática de las rutas pasan.
-- El build requiere el SDK/compilador C# y no puede ejecutarse en este entorno
-  Linux porque `dotnet` no está instalado.
+- El primer build de Windows del commit `491e4fd` reveló que `WorkQueue` no
+  importaba `SKYNET.Helpers` y que convenía separar la condición de cancelación
+  del `TryDequeue(out var ...)` para el compilador .NET Framework; ambos puntos
+  quedan corregidos en el commit de seguimiento.
 - En Windows: borrar una carpeta `D2MAX\Workshop` antigua solo después de
   conservar cualquier contenido real; iniciar con cuenta A, cerrar Dota, iniciar
   con cuenta B y confirmar el `FallbackAccountId` en

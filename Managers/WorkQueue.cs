@@ -1,4 +1,5 @@
 using SKYNET.Callback;
+using SKYNET.Helpers;
 using SKYNET.Steamworks;
 using System;
 using System.Collections.Concurrent;
@@ -185,8 +186,13 @@ namespace SKYNET.Managers
             {
                 HighPrioritySignal.Wait();
 
-                while (!Lifetime.IsShuttingDown && HighPriority.TryDequeue(out var item))
+                while (!Lifetime.IsShuttingDown)
                 {
+                    if (!HighPriority.TryDequeue(out var item))
+                    {
+                        break;
+                    }
+
                     RunItem(item);
                 }
             }
@@ -198,8 +204,13 @@ namespace SKYNET.Managers
             {
                 NormalPrioritySignal.Wait();
 
-                while (!Lifetime.IsShuttingDown && NormalPriority.TryDequeue(out var item))
+                while (!Lifetime.IsShuttingDown)
                 {
+                    if (!NormalPriority.TryDequeue(out var item))
+                    {
+                        break;
+                    }
+
                     RunItem(item);
                 }
             }
