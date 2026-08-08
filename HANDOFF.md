@@ -51,3 +51,34 @@ HTML. El hook de `ProcessExit` cubre juegos que no llaman a
   `game\bin\win64\D2MAX\steam_api.ini`.
 - Confirmar en Task Manager que no queda `dota2.exe` de la primera ejecución y
   repetir el lanzamiento sin borrar manualmente la carpeta `D2MAX`.
+
+## Avatar del cliente Dota 2
+
+La ruta activa es `SteamFriends.Get*FriendAvatar` → `RequestAvatar` →
+`APIClient.RefreshAvatar` → `GET api/users/{steamId}/avatar`. Cuando la imagen
+llega, `AddOrUpdateAvatar` registra los handles 32/64/184, emite
+`AvatarImageLoaded_t` y `SteamUtils.GetImageRGBA` entrega los bytes RGBA que
+consume Dota. El caché se guarda por servidor y Steam ID en
+`D2MAX\Data\Images\AvatarCache`.
+
+La DLL anterior y el servidor SKY usaban la misma idea, pero el endpoint SKY
+no exigía un bearer token. D2ST sí lo exige. `RefreshAvatar` estaba llamando al
+`EnsureSession()` no bloqueante y podía enviar el GET antes de tener el token;
+el `401` se descartaba y `QueryingAvatar` impedía que esa primera solicitud se
+repitiera. Ahora la solicitud de avatar espera la sesión en su worker, reintenta
+una vez si el token fue invalidado por un reinicio del servidor y registra el
+status HTTP cuando falla. También se normaliza el DPI inválido de PNG antes de
+`Bitmap.SetResolution`, que antes podía convertir una imagen válida en un
+avatar vacío silenciosamente.
+
+El fallback del servidor es intencionadamente un PNG transparente 1x1. Por eso
+una cuenta nueva sin `Avatar` almacenado no mostrará una fotografía: el
+launcher actual solo descarga el avatar y no tiene selector de archivos. Para
+probar una imagen real hay que cargarla desde el panel administrativo D2ST o
+usar `PUT /api/users/me/avatar`; después el evento de cambio de persona fuerza
+la recarga en el cliente.
+
+La corrección todavía requiere compilar el DLL con MSBuild/DllExport en
+Windows y comprobar en el log que `RefreshAvatar` no devuelve `HTTP 401`, que
+aparece `AvatarImageLoaded_t` y que las llamadas `GetImageSize`/`GetImageRGBA`
+devuelven 32/64/184 y bytes no vacíos.

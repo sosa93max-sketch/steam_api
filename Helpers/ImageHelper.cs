@@ -13,7 +13,10 @@ namespace SKYNET.Helpers
         {
             Rectangle destRect = new Rectangle(0, 0, width, height);
             Bitmap bitmap = new Bitmap(width, height);
-            bitmap.SetResolution(image.HorizontalResolution, image.VerticalResolution);
+            // Some PNGs served by web stacks have missing/invalid DPI metadata.
+            // GDI+ throws from SetResolution in that case; the caller used to
+            // swallow the exception and publish a blank avatar instead.
+            bitmap.SetResolution(ValidResolution(image.HorizontalResolution), ValidResolution(image.VerticalResolution));
             using (Graphics graphics = Graphics.FromImage(bitmap))
             {
                 graphics.CompositingMode = CompositingMode.SourceCopy;
@@ -28,6 +31,13 @@ namespace SKYNET.Helpers
                     return bitmap;
                 }
             }
+        }
+
+        private static float ValidResolution(float resolution)
+        {
+            return float.IsNaN(resolution) || float.IsInfinity(resolution) || resolution <= 0 || resolution > 10000
+                ? 96f
+                : resolution;
         }
 
         public static void ToFile(string imagePath, Image image)

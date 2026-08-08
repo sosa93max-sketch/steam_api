@@ -1815,11 +1815,36 @@ namespace SKYNET.Managers
 
             try
             {
-                EnsureSession();
+                // D2ST authenticates the avatar endpoint.  Avatar requests are
+                // already executed on a ThreadPool worker by SteamFriends, so
+                // wait for the session here instead of sending an unauthenticated
+                // request and losing the only AvatarImageLoaded notification.
+                if (!EnsureSessionBlocking(InitialSessionTimeoutMs))
+                {
+                    SteamEmulator.Write("APIClient", $"RefreshAvatar {steamId} skipped: session unavailable");
+                    return false;
+                }
 
                 var response = HttpRequestSync("GET", $"api/users/{steamId}/avatar", null, applyAuth: true, timeoutMs: 0);
+                if (response.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    // A server restart can invalidate an otherwise present
+                    // token. Re-establish the session once before giving up.
+                    ResetSession();
+                    if (!EnsureSessionBlocking(InitialSessionTimeoutMs))
+                    {
+                        SteamEmulator.Write("APIClient", $"RefreshAvatar {steamId} retry skipped: session unavailable");
+                        return false;
+                    }
+
+                    response = HttpRequestSync("GET", $"api/users/{steamId}/avatar", null, applyAuth: true, timeoutMs: 0);
+                }
+
                 if (!response.IsSuccess)
                 {
+                    SteamEmulator.Write(
+                        "APIClient",
+                        $"RefreshAvatar {steamId} failed: HTTP {(int)response.StatusCode}");
                     return false;
                 }
 
